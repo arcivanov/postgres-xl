@@ -63,7 +63,7 @@ to the main documentation.  Don't use <xref>.
  <para>
   <emphasis>
    Note that the preferred method of configuring a cluster after installation is
-   to use the <xref linkend="pgxc_ctl"> utility. It should save administrators
+   to use the <xref linkend="pgxc-ctl"> utility. It should save administrators
    a lot of time in debugging misconfigured clusters.
   </emphasis>
  </para>
@@ -130,7 +130,7 @@ su - postgres
 <!## XL>
  <para>
   <emphasis>Note that the preferred method of configuring a cluster after installation is
-  to use the <xref linkend="pgxc_ctl"> utility. It should save administrators
+  to use the <xref linkend="pgxc-ctl"> utility. It should save administrators
   time in debugging misconfigured clusters.</emphasis>
   Nonetheless, for completeness, manual configuration steps also appear
   later in this section.
@@ -146,7 +146,7 @@ pgxc_ctl init all
  </para>
 
   <para>
-    If, unfortunately, not using <xref linkend="pgxc_ctl">, the following short installation allows to install a simple cluster on a local machine with
+    If, unfortunately, not using <xref linkend="pgxc-ctl">, the following short installation allows to install a simple cluster on a local machine with
     1 Coordinator, 2 Datanodes and 1 GTM. When installing a more complex cluster, you might
     change the number of Coordinators and Datanodes, and might have to start nodes on different
     servers.
@@ -2121,7 +2121,7 @@ Postgres-XL, contrib and HTML documentation successfully made. Ready to install.
    </para>
 <!## XL>
    <para>
-   The preceding just installs base Postgres-XL. You should also build and install the <xref linkend="pgxc_ctl"> utility, found in a subdirectory off of the contrib directory.  <xref linkend="pgxc_ctl"> should then be used to configure the cluster.
+   The preceding just installs base Postgres-XL. You should also build and install the <xref linkend="pgxc-ctl"> utility, found in a subdirectory off of the contrib directory.  <xref linkend="pgxc-ctl"> should then be used to configure the cluster.
    </para>
 <!## end>
 
