@@ -3,11 +3,11 @@ doc/src/sgml/ref/pgxc_ctl-ref.sgml
 PostgreSQL documentation
 -->
 
-<sect1 id="pgxc_ctl" xreflabel="pgxc_ctl">
+<sect1 id="pgxc-ctl" xreflabel="pgxc_ctl">
 
 <title>pgxc_ctl</title>
 
-<indexterm zone="pgxc_ctl">
+<indexterm zone="pgxc-ctl">
  <primary>pgxc_ctl</primary>
 </indexterm>
 
