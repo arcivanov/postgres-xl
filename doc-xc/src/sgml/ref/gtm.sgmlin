@@ -58,7 +58,7 @@ PostgreSQL documentation
    configuring and managing them is with the <xref linkend="pgxc-ctl"> utility.
 <!## end>
 <!## XL>
-   configuring and managing them is with the <xref linkend="pgxc_ctl"> utility.
+   configuring and managing them is with the <xref linkend="pgxc-ctl"> utility.
 <!## end>
  </para>
 
