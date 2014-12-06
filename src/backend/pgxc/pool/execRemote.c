@@ -1447,9 +1447,11 @@ BufferConnection(PGXCNodeHandle *conn)
 				 * by the datanode
 				 */
 				if (pgxc_node_send_sync(conn) != 0)
+				{
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to fetch from data node")));
+							 errmsg("Failed to sync msg to node %u", conn->nodeoid)));
+				}
 			}
 		}
 		else if (res == RESPONSE_SUSPENDED || res == RESPONSE_READY)
@@ -1800,19 +1802,30 @@ FetchTuple(ResponseCombiner *combiner)
 			 * executed there yet. Return and go on with second phase.
 			 */
 			if (combiner->probing_primary)
+			{
 				return NULL;
+			}
+
 			if (pgxc_node_send_execute(conn, combiner->cursor, 1000) != 0)
+			{
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to fetch from data node")));
+						 errmsg("Failed to send execute cursor '%s' to node %u", combiner->cursor, conn->nodeoid)));
+			}
+
 			if (pgxc_node_send_flush(conn) != 0)
+			{
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to fetch from data node")));
+						 errmsg("Failed flush cursor '%s' node %u", combiner->cursor, conn->nodeoid)));
+			}
+
 			if (pgxc_node_receive(1, &conn, NULL))
+			{
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to fetch from data node")));
+						 errmsg("Failed receive data from node %u cursor '%s'", conn->nodeoid, combiner->cursor)));
+			}
 		}
 
 		/* read messages */
@@ -1829,7 +1842,7 @@ FetchTuple(ResponseCombiner *combiner)
 			if (pgxc_node_receive(1, &conn, NULL))
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to fetch from data node")));
+						 errmsg("Failed to receive more data from data node %u", conn->nodeoid)));
 			continue;
 		}
 		else if (res == RESPONSE_SUSPENDED)
@@ -1844,17 +1857,36 @@ FetchTuple(ResponseCombiner *combiner)
 				if (pgxc_node_send_execute(conn, combiner->cursor, 1000) != 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to fetch from data node")));
+							 errmsg("Failed to send execute cursor '%s' to node %u", combiner->cursor, conn->nodeoid)));
 				if (pgxc_node_send_flush(conn) != 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to fetch from data node")));
+							 errmsg("Failed flush cursor '%s' node %u", combiner->cursor, conn->nodeoid)));
 				if (pgxc_node_receive(1, &conn, NULL))
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to fetch from data node")));
+							 errmsg("Failed receive node from node %u cursor '%s'", conn->nodeoid, combiner->cursor)));
 				continue;
 			}
+
+			/*
+			 * Tell the node to fetch data in background, next loop when we 
+			 * pgxc_node_receive, data is already there, so we can run faster
+			 * */
+			if (pgxc_node_send_execute(conn, combiner->cursor, 1000) != 0)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("Failed to send execute cursor '%s' to node %u", combiner->cursor, conn->nodeoid)));
+			}
+
+			if (pgxc_node_send_flush(conn) != 0)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("Failed flush cursor '%s' node %u", combiner->cursor, conn->nodeoid)));
+			}
+
 			if (++combiner->current_conn >= combiner->conn_count)
 				combiner->current_conn = 0;
 			conn = combiner->connections[combiner->current_conn];
@@ -1894,7 +1926,7 @@ FetchTuple(ResponseCombiner *combiner)
 				if (pgxc_node_send_sync(conn) != 0)
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to fetch from data node")));
+							 errmsg("Failed to sync msg to node %u", conn->nodeoid)));
 			}
 			/*
 			 * Do not wait for response from primary, it needs to wait
@@ -5788,6 +5820,9 @@ ExecRemoteUtility(RemoteQuery *node)
 	bool		need_tran_block;
 	ExecDirectType		exec_direct_type = node->exec_direct_type;
 	int			i;
+#ifdef XCP
+	CommandId	cid = GetCurrentCommandId(false);	
+#endif	
 
 	if (!force_autocommit)
 		RegisterTransactionLocalNode(true);
@@ -5863,8 +5898,15 @@ ExecRemoteUtility(RemoteQuery *node)
 			{
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
-						 errmsg("Failed to send command to Datanodes")));
+						 errmsg("Failed to send snapshot to Datanodes")));
 			}
+			if (pgxc_node_send_cmd_id(conn, cid) < 0)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("Failed to send command ID to Datanodes")));
+			}
+
 			if (pgxc_node_send_query(conn, node->sql_statement) != 0)
 			{
 				ereport(ERROR,
@@ -5892,6 +5934,13 @@ ExecRemoteUtility(RemoteQuery *node)
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("Failed to send command to coordinators")));
 			}
+			if (pgxc_node_send_cmd_id(pgxc_connections->coord_handles[i], cid) < 0)
+			{
+				ereport(ERROR,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("Failed to send command ID to Datanodes")));
+			}
+
 			if (pgxc_node_send_query(pgxc_connections->coord_handles[i], node->sql_statement) != 0)
 			{
 				ereport(ERROR,
@@ -8345,6 +8394,7 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 {
 	ResponseCombiner   *combiner = (ResponseCombiner *) node;
 	RemoteSubplan  	   *plan = (RemoteSubplan *) combiner->ss.ps.plan;
+	EState			   *estate = combiner->ss.ps.state;
 	Oid        		   *paramtypes = NULL;
 	GlobalTransactionId gxid = InvalidGlobalTransactionId;
 	Snapshot			snapshot;
@@ -8447,7 +8497,15 @@ ExecFinishInitRemoteSubplan(RemoteSubplanState *node)
 			pfree(combiner->connections);
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg("Failed to send command to data nodes")));
+					 errmsg("Failed to send snapshot to data nodes")));
+		}
+		if (pgxc_node_send_cmd_id(connection, estate->es_snapshot->curcid) < 0 )
+		{
+			combiner->conn_count = 0;
+			pfree(combiner->connections);
+			ereport(ERROR,
+					(errcode(ERRCODE_INTERNAL_ERROR),
+					 errmsg("Failed to send command ID to data nodes")));
 		}
 		pgxc_node_send_plan(connection, cursor, "Remote Subplan",
 							node->subplanstr, node->nParamRemote, paramtypes);
@@ -8709,7 +8767,7 @@ primary_mode_phase_two:
 					pfree(combiner->connections);
 					ereport(ERROR,
 							(errcode(ERRCODE_INTERNAL_ERROR),
-							 errmsg("Failed to send command to data nodes")));
+							 errmsg("Failed to send command ID to data nodes")));
 				}
 
 				/*
