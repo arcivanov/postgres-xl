@@ -312,6 +312,15 @@ static char *allocActualCmd(cmd_t *cmd)
 		return (cmd->actualCmd) ? cmd->actualCmd : (cmd->actualCmd = Malloc(MAXLINE+1));
 }
 
+int isRemoteCommand(cmd_t *cmd)
+{
+	if(cmd->host)
+	{
+		return TRUE;
+	}
+	return FALSE;
+}
+
 /* localStdout has to be set by the caller */
 int doCmdEl(cmd_t *cmd)
 {
@@ -324,7 +333,7 @@ int doCmdEl(cmd_t *cmd)
 		freeAndReset(cmd->callback_parm);
 		return 0;
 	}
-	if (cmd->host)
+	if (isRemoteCommand(cmd))
 	{
 		/* Build actual command */
 		snprintf(allocActualCmd(cmd), MAXLINE,
