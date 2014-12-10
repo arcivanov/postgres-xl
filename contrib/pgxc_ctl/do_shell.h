@@ -91,6 +91,8 @@ extern cmd_t *initCmd(char *host);
  * not available, we provide corresponding local implementation for them.
  */
 
+extern int isLoopAddr(int family, struct sockaddr *addr);
+extern int isLocalAddr(int family, struct sockaddr *testAddr);
 extern int isRemoteCommand(cmd_t *cmd);
 extern int doCmdEl(cmd_t *cmd);
 extern int doCmd(cmd_t *cmd);

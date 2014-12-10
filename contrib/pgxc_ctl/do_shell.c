@@ -35,6 +35,9 @@
 #include <string.h>
 #include <readline/readline.h>
 #include <readline/history.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <ifaddrs.h>
 
 #include "pgxc_ctl.h"
 #include "variables.h"
@@ -312,11 +315,101 @@ static char *allocActualCmd(cmd_t *cmd)
 		return (cmd->actualCmd) ? cmd->actualCmd : (cmd->actualCmd = Malloc(MAXLINE+1));
 }
 
+int isLoopAddr(int family, struct sockaddr *addr)
+{
+	switch (family)
+	{
+	case AF_INET:
+		return (((struct sockaddr_in *) addr)->sin_addr.s_addr & 0x0000007Fl)
+				== 0x0000007Fl;
+	case AF_INET6:
+		return IN6_IS_ADDR_LOOPBACK(&((struct sockaddr_in6 * ) addr)->sin6_addr);
+	default:
+		return FALSE;
+	}
+}
+
+int isLocalAddr(int family, struct sockaddr *testAddr)
+{
+	struct ifaddrs *ifAddrStruct, *ifa;
+	int result = FALSE;
+
+	if (getifaddrs(&ifAddrStruct))
+	{
+		result = errno;
+		elog(
+				WARNING, "WARNING: unable to enumerate local interfaces: %s", strerror(result));
+		return FALSE;
+	}
+
+	for (ifa = ifAddrStruct; ifa != NULL; ifa = ifa->ifa_next)
+	{
+		if (!ifa->ifa_addr)
+		{
+			continue;
+		}
+		if (family == AF_INET && ifa->ifa_addr->sa_family == AF_INET)
+		{
+			if (!(((struct sockaddr_in *) ifa->ifa_addr)->sin_addr.s_addr
+					- ((struct sockaddr_in *) testAddr)->sin_addr.s_addr))
+			{
+				result = TRUE;
+				break;
+			}
+		}
+		else if (family == AF_INET6 && ifa->ifa_addr->sa_family == AF_INET6)
+		{
+			if (IN6_ARE_ADDR_EQUAL(
+					&((struct sockaddr_in6 * ) ifa->ifa_addr)->sin6_addr,
+					&((struct sockaddr_in6 * ) testAddr)->sin6_addr))
+			{
+				result = TRUE;
+				break;
+			}
+		}
+	}
+	if (ifAddrStruct != NULL)
+		freeifaddrs(ifAddrStruct);
+	return result;
+}
+
 int isRemoteCommand(cmd_t *cmd)
 {
-	if(cmd->host)
+	if (cmd->host)
 	{
-		return TRUE;
+		struct addrinfo hints;
+		struct addrinfo *res, *rp;
+		int err, result = TRUE;
+
+		memset(&hints, 0, sizeof(struct addrinfo));
+		hints.ai_family = AF_UNSPEC;
+		hints.ai_flags = AI_ADDRCONFIG;
+
+		err = getaddrinfo(cmd->host, NULL, &hints, &res);
+		if (err)
+		{
+			elog(
+					WARNING, "WARNING: unable to resolve host '%s': %s\n", cmd->host, gai_strerror(err));
+			// Assume remote and let ssh sort it out
+			return TRUE;
+		}
+
+		for (rp = res; rp != NULL; rp = rp->ai_next)
+		{
+			if (isLoopAddr(res->ai_family, res->ai_addr)
+					|| isLocalAddr(res->ai_family, res->ai_addr))
+			{
+				result = FALSE;
+				break;
+			}
+		}
+		freeaddrinfo(res);
+		if (!result)
+		{
+			elog(
+			INFO, "INFO: host '%s' is local, ssh will not be used", cmd->host);
+		}
+		return result;
 	}
 	return FALSE;
 }
