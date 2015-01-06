@@ -2449,9 +2449,9 @@ pfree_pgxc_all_handles(PGXCNodeAllHandles *pgxc_handles)
 
 	if (pgxc_handles->primary_handle)
 		pfree(pgxc_handles->primary_handle);
-	if (pgxc_handles->datanode_handles && pgxc_handles->dn_conn_count != 0)
+	if (pgxc_handles->datanode_handles)
 		pfree(pgxc_handles->datanode_handles);
-	if (pgxc_handles->coord_handles && pgxc_handles->co_conn_count != 0)
+	if (pgxc_handles->coord_handles)
 		pfree(pgxc_handles->coord_handles);
 
 	pfree(pgxc_handles);
@@ -2885,9 +2885,18 @@ pgxc_node_set_query(PGXCNodeHandle *handle, const char *set_query)
 			continue;
 		}
 		msgtype = get_message(handle, &msglen, &msg);
+
 		/*
-		 * Ignore any response except ReadyForQuery, it allows to go on.
+		 * Ignore any response except ErrorResponse and ReadyForQuery
 		 */
+
+		if (msgtype == 'E')	/* ErrorResponse */
+		{
+			handle->error = pstrdup(msg);
+			handle->state = DN_CONNECTION_STATE_ERROR_FATAL;
+			break;
+		}
+
 		if (msgtype == 'Z') /* ReadyForQuery */
 		{
 			handle->transaction_status = msg[0];

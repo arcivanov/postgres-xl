@@ -2753,7 +2753,10 @@ PrepareTransaction(void)
 	{
 		char		*nodestring;
 		if (saveNodeString)
+		{
 			pfree(saveNodeString);
+			saveNodeString = NULL;
+		}
 
 		/* Needed in PrePrepare_Remote to submit nodes to GTM */
 		s->topGlobalTransansactionId = s->transactionId;
@@ -2964,6 +2967,9 @@ PrepareTransaction(void)
 #ifdef PGXC
 	/* Clean up GTM callbacks */
 	CleanGTMCallbacks();
+#ifdef XCP	
+	AtEOXact_Remote();	
+#endif	
 #endif
 
 	s->transactionId = InvalidTransactionId;

@@ -14,15 +14,8 @@ extern char GTMControlFile[];
 
 void GTM_WriteRestorePoint(void)
 {
-	FILE *f = fopen(GTMControlFile, "w");
+	FILE *f;
 
-	if (f == NULL)
-	{
-		ereport(LOG, (errno,
-					  errmsg("Cannot open control file"),
-					  errhint("%s", strerror(errno))));
-		return;
-	}
 	GTM_RWLockAcquire(&gtm_bkup_lock, GTM_LOCKMODE_WRITE);
 	if (!gtm_need_bkup)
 	{
@@ -31,6 +24,15 @@ void GTM_WriteRestorePoint(void)
 	}
 	gtm_need_bkup = FALSE;
 	GTM_RWLockRelease(&gtm_bkup_lock);
+	// Prevent file handle leak
+	f = fopen(GTMControlFile, "w");
+	if (f == NULL)
+	{
+		ereport(LOG, (errno,
+					  errmsg("Cannot open control file '%s'", GTMControlFile),
+					  errhint("%s", strerror(errno))));
+		return;
+	}
 	GTM_WriteRestorePointXid(f);
 	GTM_WriteRestorePointSeq(f);
 	fclose(f);
@@ -48,7 +50,7 @@ void GTM_WriteBarrierBackup(char *barrier_id)
 	if ((f = fopen(BarrierFilePath, "w")) == NULL)
 	{
 		ereport(LOG, (errno,
-					  errmsg("Cannot open control file"),
+					  errmsg("Cannot open control file '%s'", BarrierFilePath),
 					  errhint("%s", strerror(errno))));
 		return;
 	}
@@ -68,7 +70,7 @@ void GTM_MakeBackup(char *path)
 	if (f == NULL)
 	{
 		ereport(LOG, (errno,
-					  errmsg("Cannot open backup file %s", path),
+					  errmsg("Cannot open backup file '%s'", path),
 					  errhint("%s", strerror(errno))));
 		return;
 	}

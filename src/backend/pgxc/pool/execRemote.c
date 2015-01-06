@@ -970,7 +970,7 @@ HandleDataRow(RemoteQueryState *combiner, char *msg_body, size_t len, int nid)
  */
 static void
 #ifdef XCP
-HandleError(ResponseCombiner *combiner, char *msg_body, size_t len)
+HandleError(ResponseCombiner *combiner, char *msg_body, size_t len, PGXCNodeHandle *conn)
 #else
 HandleError(RemoteQueryState *combiner, char *msg_body, size_t len)
 #endif
@@ -1043,6 +1043,16 @@ HandleError(RemoteQueryState *combiner, char *msg_body, size_t len)
 		if (detail)
 			combiner->errorDetail = pstrdup(detail);
 	}
+
+	/*
+	 * If the PREPARE TRANSACTION command fails for whatever reason, we don't
+	 * want to send down ROLLBACK PREPARED to this node. Otherwise, it may end
+	 * up rolling back an unrelated prepared transaction with the same GID as
+	 * used by this transaction
+	 */
+	if (conn->ck_resp_rollback)
+		conn->ck_resp_rollback = false;
+
 #else
 	if (!combiner->errorMessage)
 	{
@@ -2308,7 +2318,7 @@ handle_response(PGXCNodeHandle *conn, ResponseCombiner *combiner)
 				HandleCopyDataRow(combiner, msg, msg_len);
 				break;
 			case 'E':			/* ErrorResponse */
-				HandleError(combiner, msg, msg_len);
+				HandleError(combiner, msg, msg_len, conn);
 				add_error_message(conn, combiner->errorMessage);
 				return RESPONSE_ERROR;
 			case 'A':			/* NotificationResponse */
@@ -2846,6 +2856,7 @@ pgxc_node_remote_cleanup_all(void)
 		pgxc_node_receive_responses(new_conn_count, new_connections, NULL, &combiner);
 		CloseCombiner(&combiner);
 	}
+	pfree_pgxc_all_handles(handles);
 }
 
 
@@ -3063,6 +3074,7 @@ pgxc_node_remote_prepare(char *prepareGID, bool localNode)
 
 	if (!isOK)
 		goto prepare_err;
+
 	/* exit if nothing has been prepared */
 	if (conn_count > 0)
 	{
@@ -3201,6 +3213,9 @@ prepare_err:
 		pgxc_node_receive_responses(conn_count, connections, NULL, &combiner2);
 		CloseCombiner(&combiner2);
 	}
+
+	pfree_pgxc_all_handles(handles);
+
 	/*
 	 * If the flag is set we are here because combiner carries error message
 	 */
@@ -3346,6 +3361,8 @@ pgxc_node_remote_commit(void)
 		pgxc_node_remote_cleanup_all();
 		release_handles();
 	}
+
+	pfree_pgxc_all_handles(handles);
 }
 
 
@@ -3446,6 +3463,8 @@ pgxc_node_remote_abort(void)
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Failed to ROLLBACK the transaction on one or more nodes")));
 	}
+
+	pfree_pgxc_all_handles(handles);
 }
 
 #else
@@ -5821,7 +5840,7 @@ ExecRemoteUtility(RemoteQuery *node)
 	ExecDirectType		exec_direct_type = node->exec_direct_type;
 	int			i;
 #ifdef XCP
-	CommandId	cid = GetCurrentCommandId(false);	
+	CommandId	cid = GetCurrentCommandId(true);	
 #endif	
 
 	if (!force_autocommit)
@@ -5849,7 +5868,10 @@ ExecRemoteUtility(RemoteQuery *node)
 #ifdef XCP
 	/* exit right away if no nodes to run command on */
 	if (dn_conn_count == 0 && co_conn_count == 0)
+	{
+		pfree_pgxc_all_handles(pgxc_connections);
 		return;
+	}
 #endif
 
 	if (force_autocommit)
@@ -6071,12 +6093,14 @@ ExecRemoteUtility(RemoteQuery *node)
 			}
 		}
 	}
+
 	/*
 	 * We have processed all responses from nodes and if we have
 	 * error message pending we can report it. All connections should be in
 	 * consistent state now and so they can be released to the pool after ROLLBACK.
 	 */
 #ifdef XCP
+	pfree_pgxc_all_handles(pgxc_connections);
 	pgxc_node_report_error(combiner);
 #else
 	pgxc_node_report_error(remotestate);
@@ -6621,8 +6645,6 @@ PreAbort_Remote(void)
 		}
 	}
 
-	pfree_pgxc_all_handles(all_handles);
-
 	/*
 	 * Now read and discard any data from the connections found "dirty"
 	 */
@@ -6655,6 +6677,8 @@ PreAbort_Remote(void)
 		pgxc_node_remote_cleanup_all();
 		release_handles();
 	}
+
+	pfree_pgxc_all_handles(all_handles);
 #else
 	if (IS_PGXC_COORDINATOR && !IsConnFromCoord())
 	{
@@ -7242,14 +7266,14 @@ pgxc_node_remote_finish(char *prepareGID, bool commit,
 			CloseCombiner(&combiner);
 	}
 
-	pfree_pgxc_all_handles(pgxc_handles);
-
 	if (!temp_object_included && !PersistentConnections)
 	{
 		/* Clean up remote sessions */
 		pgxc_node_remote_cleanup_all();
 		release_handles();
 	}
+
+	pfree_pgxc_all_handles(pgxc_handles);
 #else
 	/*
 	 * Now get handles for all the involved Datanodes and the Coordinators
@@ -7394,6 +7418,7 @@ ExecRemoteQuery(RemoteQueryState *node)
 	ResponseCombiner *combiner = (ResponseCombiner *) node;
 	RemoteQuery    *step = (RemoteQuery *) combiner->ss.ps.plan;
 	TupleTableSlot *resultslot = combiner->ss.ps.ps_ResultTupleSlot;
+
 	if (!node->query_Done)
 	{
 		GlobalTransactionId gxid = InvalidGlobalTransactionId;
@@ -7432,8 +7457,6 @@ ExecRemoteQuery(RemoteQueryState *node)
 		if (primaryconnection)
 			regular_conn_count--;
 
-		pfree(pgxc_connections);
-
 		/*
 		 * We save only regular connections, at the time we exit the function
 		 * we finish with the primary connection and deal only with regular
@@ -7459,9 +7482,7 @@ ExecRemoteQuery(RemoteQueryState *node)
 
 		if (!GlobalTransactionIdIsValid(gxid))
 		{
-			if (primaryconnection)
-				pfree(primaryconnection);
-			pfree(connections);
+			pfree_pgxc_all_handles(pgxc_connections);
 			ereport(ERROR,
 					(errcode(ERRCODE_INTERNAL_ERROR),
 					 errmsg("Failed to get next transaction ID")));
@@ -7479,8 +7500,7 @@ ExecRemoteQuery(RemoteQueryState *node)
 			/* If explicit transaction is needed gxid is already sent */
 			if (!pgxc_start_command_on_connection(primaryconnection, node, snapshot))
 			{
-				pfree(connections);
-				pfree(primaryconnection);
+				pfree_pgxc_all_handles(pgxc_connections);
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("Failed to send command to data nodes")));
@@ -7529,9 +7549,7 @@ ExecRemoteQuery(RemoteQueryState *node)
 			/* If explicit transaction is needed gxid is already sent */
 			if (!pgxc_start_command_on_connection(connections[i], node, snapshot))
 			{
-				pfree(connections);
-				if (primaryconnection)
-					pfree(primaryconnection);
+				pfree_pgxc_all_handles(pgxc_connections);
 				ereport(ERROR,
 						(errcode(ERRCODE_INTERNAL_ERROR),
 						 errmsg("Failed to send command to data nodes")));
@@ -9211,6 +9229,8 @@ pgxc_all_success_nodes(ExecNodes **d_nodes, ExecNodes **c_nodes, char **failedno
 		*failednodes_msg = NULL;
 	else
 		*failednodes_msg = failednodes.data;
+
+	pfree_pgxc_all_handles(connections);
 }
 
 
